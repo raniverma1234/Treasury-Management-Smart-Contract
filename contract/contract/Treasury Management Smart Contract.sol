@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
+interface IERC20 {
+    function transfer(address recipient, uint256 amount) external returns (bool);
+}
+
 contract TreasuryManagement {
     address public owner;
     address public beneficiary;
@@ -13,12 +17,14 @@ contract TreasuryManagement {
     uint256 public lastWithdrawalDay;
 
     event Deposited(address indexed from, uint256 amount);
+    event DepositedWithMessage(address indexed from, uint256 amount, string message);
     event Withdrawn(address indexed to, uint256 amount);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
     event Paused();
     event Unpaused();
     event DailyLimitUpdated(uint256 newLimit);
     event BeneficiaryChanged(address indexed oldBeneficiary, address indexed newBeneficiary);
+    event TokensRecovered(address token, address to, uint256 amount);
 
     constructor() {
         owner = msg.sender;
@@ -35,21 +41,24 @@ contract TreasuryManagement {
         _;
     }
 
-    // Receive function
     receive() external payable {
         totalBalance += msg.value;
         totalDeposits += msg.value;
         emit Deposited(msg.sender, msg.value);
     }
 
-    // Fallback function
     fallback() external payable {
         totalBalance += msg.value;
         totalDeposits += msg.value;
         emit Deposited(msg.sender, msg.value);
     }
 
-    // Withdraw with daily limit and pause check
+    function depositWithMessage(string calldata message) external payable whenNotPaused {
+        totalBalance += msg.value;
+        totalDeposits += msg.value;
+        emit DepositedWithMessage(msg.sender, msg.value, message);
+    }
+
     function withdraw(address payable recipient, uint256 amount) external onlyOwner whenNotPaused {
         require(amount <= totalBalance, "Insufficient funds");
 
@@ -65,6 +74,32 @@ contract TreasuryManagement {
         dailyWithdrawn += amount;
         recipient.transfer(amount);
         emit Withdrawn(recipient, amount);
+    }
+
+    function multiWithdraw(address payable[] calldata recipients, uint256[] calldata amounts) external onlyOwner whenNotPaused {
+        require(recipients.length == amounts.length, "Mismatched arrays");
+
+        uint256 totalAmount;
+        uint256 currentDay = block.timestamp / 1 days;
+        if (currentDay > lastWithdrawalDay) {
+            dailyWithdrawn = 0;
+            lastWithdrawalDay = currentDay;
+        }
+
+        for (uint256 i = 0; i < recipients.length; i++) {
+            totalAmount += amounts[i];
+        }
+
+        require(totalAmount <= totalBalance, "Insufficient funds");
+        require(dailyWithdrawn + totalAmount <= dailyLimit, "Exceeds daily limit");
+
+        totalBalance -= totalAmount;
+        dailyWithdrawn += totalAmount;
+
+        for (uint256 i = 0; i < recipients.length; i++) {
+            recipients[i].transfer(amounts[i]);
+            emit Withdrawn(recipients[i], amounts[i]);
+        }
     }
 
     function emergencyWithdraw() external onlyOwner {
@@ -88,29 +123,38 @@ contract TreasuryManagement {
         owner = newOwner;
     }
 
-    // Pause the contract
+    function updateOwnerAndBeneficiary(address newOwner, address newBeneficiary) external onlyOwner {
+        require(newOwner != address(0) && newBeneficiary != address(0), "Invalid addresses");
+        emit OwnershipTransferred(owner, newOwner);
+        emit BeneficiaryChanged(beneficiary, newBeneficiary);
+        owner = newOwner;
+        beneficiary = newBeneficiary;
+    }
+
     function pause() external onlyOwner {
         paused = true;
         emit Paused();
     }
 
-    // Unpause the contract
     function unpause() external onlyOwner {
         paused = false;
         emit Unpaused();
     }
 
-    // Set a daily withdrawal limit (in wei)
     function setDailyLimit(uint256 limit) external onlyOwner {
         dailyLimit = limit;
         emit DailyLimitUpdated(limit);
     }
 
-    // Set a new beneficiary (recipient of special payments if needed)
     function setBeneficiary(address newBeneficiary) external onlyOwner {
         require(newBeneficiary != address(0), "Invalid address");
         emit BeneficiaryChanged(beneficiary, newBeneficiary);
         beneficiary = newBeneficiary;
     }
-}
 
+    function recoverERC20(address tokenAddress, address to, uint256 amount) external onlyOwner {
+        require(tokenAddress != address(0) && to != address(0), "Invalid address");
+        IERC20(tokenAddress).transfer(to, amount);
+        emit TokensRecovered(tokenAddress, to, amount);
+    }
+}
